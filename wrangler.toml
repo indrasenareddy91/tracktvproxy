@@ -1,0 +1,10 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "trakt-trending-movies"
+main = "src/scrape.js"
+compatibility_date = "2023-01-01"
+kv_namespaces = [
+  { binding = "TRENDING_MOVIES", id = "beecdd2e432449a7ab3bfe6f8197cbdb" }
+]
+[triggers]
+crons = ["0 0 * * *"] # Run daily at midnight UTC
+
