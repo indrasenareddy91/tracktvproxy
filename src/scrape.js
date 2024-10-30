@@ -1,170 +1,114 @@
 import { load } from "cheerio";
 import { AutoRouter } from "itty-router";
+
 const router = AutoRouter();
 
 async function getTrendingMovies() {
   try {
-    const response = await fetch("https://trakt.tv/movies/trending", {
+    const response = await fetch("https://flixpatrol.com/top10/", {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
       },
     });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
     const html = await response.text();
     const $ = load(html);
+    const streamingServices = [
+      "netflix-1",
+      "hbo-1",
+      "amazon-prime-1",
+      "apple-tv-1",
+    ];
+    const results = [];
 
-    const trendingMovies = [];
+    streamingServices.forEach((service) => {
+      const serviceDiv = $(`#${service}`);
+      if (serviceDiv.length) {
+        serviceDiv
+          .find("tbody tr")
+          .slice(0, 2)
+          .each((index, element) => {
+            const titleElement = $(element).find("td:nth-child(2) a");
+            const titleText = titleElement.find("div:last-child").text().trim();
+            const titleUrl = titleElement.attr("href") || "";
 
-    $(".grid-item").each((i, elem) => {
-      const title = $(".fanart").attr("title");
+            // Extract year from URL if available
+            const yearMatch = titleUrl.match(/-(\d{4})(?:\/|$)/);
+            const year = yearMatch ? yearMatch[1] : "";
 
-      const watchersText = $(elem).find(".titles h4").text().trim();
-      const watchers = parseInt(watchersText.replace(" people watching", ""));
+            // Format title with year if available
+            const formattedTitle = year ? `${titleText} (${year})` : titleText;
 
-      if (i === 8) {
-        return false; // Break after 8 items
-      }
+            const isOriginal =
+              $(element).find('span[title*="original"]').length > 0;
+            const points = parseInt(
+              $(element).find("td:nth-child(3)").text().trim(),
+              10
+            );
 
-      if (title && !isNaN(watchers)) {
-        trendingMovies.push({
-          title,
-          watchers,
-          timestamp: new Date().toISOString(),
-        });
+            results.push({
+              rank: index + 1,
+              title: formattedTitle.replace(/\s+/g, " "),
+              isOriginal,
+              points,
+              platform:
+                service.split("-")[0] +
+                (service.split("-")[1] && isNaN(service.split("-")[1])
+                  ? " " + service.split("-")[1]
+                  : ""),
+              date: new Date().toISOString().split("T")[0],
+            });
+          });
       }
     });
 
-    console.log("Trending movies collected");
-    return trendingMovies;
+    return results;
   } catch (error) {
-    console.error("An error occurred while fetching movies:", error);
-    throw error; // Propagate the error up
+    console.error("Error in getTrendingMovies:", error);
+    throw error;
   }
 }
 
-async function updateDatabase(trendingMovies, env) {
-  if (!env?.TRENDING_MOVIES) {
-    throw new Error("KV namespace MOVIES is not available");
-  }
-
-  console.log("Updating database using Workers KV");
-
+// API route to get current trending movies
+router.get("/api/trending", async (request, env, ctx) => {
   try {
-    // Get existing movies to check for duplicates
-    const existingMovies = await env.TRENDING_MOVIES.get("TRENDING_MOVIES");
-    const existingData = existingMovies ? JSON.parse(existingMovies) : [];
+    if (!env?.TRENDING_MOVIES) {
+      throw new Error("KV namespace TRENDING_MOVIES is not configured");
+    }
 
-    // Filter out movies that already exist
-    const newMovies = trendingMovies.filter(
-      (movie) =>
-        !existingData.some(
-          (existing) =>
-            existing.title === movie.title &&
-            existing.watchers === movie.watchers
-        )
-    );
+    const moviesData = await env.TRENDING_MOVIES.get("TRENDING_MOVIES");
 
-    if (newMovies.length > 0) {
-      const updatedMovies = [...newMovies, ...existingData].slice(0, 8); // Keep only the latest 8 movies
-
+    if (!moviesData) {
+      // If no data exists, fetch it immediately
+      const trendingMovies = await getTrendingMovies();
       await env.TRENDING_MOVIES.put(
         "TRENDING_MOVIES",
-        JSON.stringify(updatedMovies)
+        JSON.stringify(trendingMovies)
       );
-      console.log(`${newMovies.length} new movies added to the database`);
-      return newMovies;
-    } else {
-      console.log("No new movies to add");
-      return [];
-    }
-  } catch (error) {
-    console.error("Error updating database:", error);
-    throw error; // Propagate the error up
-  }
-}
-
-// Root route handler
-router.get("/", async (request, env, ctx) => {
-  console.log(env);
-  try {
-    // Validate env object
-    if (!env?.TRENDING_MOVIES) {
-      throw new Error("KV namespace MOVIES is not configured");
-    }
-
-    const trendingMovies = await getTrendingMovies();
-    const updatedMovies = await updateDatabase(trendingMovies, env);
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        message: `Updated ${updatedMovies.length} new movies`,
-        data: updatedMovies,
-      }),
-      {
+      return new Response(JSON.stringify(trendingMovies), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         },
-      }
-    );
-  } catch (error) {
-    console.error("Error in root route:", error);
-    return new Response(
-      JSON.stringify({
-        success: false,
-        message: "Failed to update movies",
-        error: error.message,
-        details: error.stack, // Including stack trace for debugging
-      }),
-      {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-      }
-    );
-  }
-});
-
-// API route handler
-router.get("/api/trending-movies", async (request, env, ctx) => {
-  try {
-    if (!env?.TRENDING_MOVIES) {
-      throw new Error("KV namespace MOVIES is not configured");
+      });
     }
 
-    const movies = await env.TRENDING_MOVIES.get("TRENDING_MOVIES");
-
-    if (!movies) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          message: "No trending movies data available",
-        }),
-        {
-          status: 404,
-          headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-          },
-        }
-      );
-    }
-
-    return new Response(movies, {
+    return new Response(moviesData, {
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
     });
   } catch (error) {
-    console.error("Error in API route:", error);
     return new Response(
       JSON.stringify({
         success: false,
-        message: "Internal server error",
+        message: "Failed to fetch trending movies",
         error: error.message,
       }),
       {
@@ -178,22 +122,75 @@ router.get("/api/trending-movies", async (request, env, ctx) => {
   }
 });
 
+// Root route handler for manual updates
+router.get("/", async (request, env, ctx) => {
+  try {
+    if (!env?.TRENDING_MOVIES) {
+      throw new Error("KV namespace TRENDING_MOVIES is not configured");
+    }
+
+    const trendingMovies = await getTrendingMovies();
+
+    await env.TRENDING_MOVIES.put(
+      "TRENDING_MOVIES",
+      JSON.stringify(trendingMovies)
+    );
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        message: `Successfully updated ${trendingMovies.length} movies`,
+        data: trendingMovies,
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        message: "Failed to update movies",
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      }
+    );
+  }
+});
+
+// Export the worker with scheduled functionality
 export default {
   fetch: router.fetch,
 
+  // Scheduled task to run daily
   scheduled: async (event, env, ctx) => {
     try {
       if (!env?.TRENDING_MOVIES) {
-        throw new Error("KV namespace MOVIES is not configured");
+        throw new Error("KV namespace TRENDING_MOVIES is not configured");
       }
 
-      console.log("Scheduled task running");
       const trendingMovies = await getTrendingMovies();
-      const updatedMovies = await updateDatabase(trendingMovies, env);
+
+      await env.TRENDING_MOVIES.put(
+        "TRENDING_MOVIES",
+        JSON.stringify(trendingMovies)
+      );
+
       return {
         success: true,
-        message: `Updated ${updatedMovies.length} new movies`,
-        data: updatedMovies,
+        message: `Successfully updated ${trendingMovies.length} movies`,
+        timestamp: new Date().toISOString(),
       };
     } catch (error) {
       console.error("Error in scheduled task:", error);
@@ -201,6 +198,7 @@ export default {
         success: false,
         message: "Scheduled task failed",
         error: error.message,
+        timestamp: new Date().toISOString(),
       };
     }
   },
