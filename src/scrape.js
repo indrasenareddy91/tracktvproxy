@@ -16,8 +16,8 @@ async function getTrendingMovies() {
     const trendingMovies = [];
 
     $(".grid-item").each((i, elem) => {
-      const titleElement = $(elem).find(".titles h3");
-      const title = titleElement.text().trim();
+      const title = $(".fanart").attr("title");
+
       const watchersText = $(elem).find(".titles h4").text().trim();
       const watchers = parseInt(watchersText.replace(" people watching", ""));
 
@@ -65,7 +65,6 @@ async function updateDatabase(trendingMovies, env) {
     );
 
     if (newMovies.length > 0) {
-      // Store all movies (new and existing) in KV
       const updatedMovies = [...newMovies, ...existingData].slice(0, 8); // Keep only the latest 8 movies
 
       await env.TRENDING_MOVIES.put(
